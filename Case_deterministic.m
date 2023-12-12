@@ -1,0 +1,258 @@
+clc;
+%% 确定性模型+都有
+Input;
+%% 决策变量
+disp("创建上层问题决策变量...");
+%压缩空气储能
+Ikch=binvar(Time,1);%压缩空气储能充电状态
+Ikdis=binvar(Time,1);%压缩空气储能放电状态
+Pkch=sdpvar(Time,1);%压缩空气储能充电功率/MW
+Pkdis=sdpvar(Time,1);%压缩空气储能放电功率/MW
+Ak=sdpvar(Time,1);%压缩空气储能电量/MWh
+%热储能
+Iphch=binvar(Time,1);
+Iphdis=binvar(Time,1);
+Aph=sdpvar(Time,1);%热量/MWh
+Hphch=sdpvar(Time,1);%充热速度/MW
+Hphdis=sdpvar(Time,1);%放热速度/MW
+%CHP机组
+Pchp=sdpvar(Time,1);%CHP机组电功率/MW
+Hchp=sdpvar(Time,1);%CHP机组热功率/MW
+Ichp=binvar(Time,1);%CHP机组状态
+SUchp=sdpvar(Time,1);%CHP机组开启成本/$
+SDchp=sdpvar(Time,1);%CHP机组关停成本/$
+GCchp=sdpvar(Time,1);%CHP机组消耗天然气量/MWh
+%电热锅炉机组
+Peb=sdpvar(Time,1);%电功率/MWh
+Heb=sdpvar(Time,1);%热功率/MWh
+%新能源机组
+Pwt=sdpvar(Time,1);%风电上网功率，MW
+%购能量
+Pmeo=sdpvar(Time,1);%购能量，MWh
+Ggm=sdpvar(Time,1);%购买天然气量，MWh
+Hgm=sdpvar(Time,1);%购买热量，MWh
+%报价参数
+Cmeo=sdpvar(Time,1);%报价，$/MWh
+%收益各项参数
+T1=sdpvar(Time,1);%售能收入，$
+T2=sdpvar(Time,1);%购能成本，$
+T3=sdpvar(Time,1);%CAES运维成本，$
+Z=sdpvar(1,1);%各场景的收益，$
+Obj_MPEC=sdpvar(1,1);%最终的期望收益，$
+disp("创建下层问题决策变量...");
+PG=sdpvar(numGenerators,Time);%发电量,MW
+Delta=sdpvar(numBuses,Time);%节点相角，rad
+disp("创建下层问题对偶问题决策变量...");
+Lanta=sdpvar(numBuses,Time);%功率平衡约束的对偶变量
+MiuMax=sdpvar(numGenerators,Time);%发电机最大输出功率对偶变量
+MiuMin=sdpvar(numGenerators,Time);%发电机最小输出功率对偶变量
+Vmin=sdpvar(numBranches,Time);%线路最小功率对偶变量
+Vmax=sdpvar(numBranches,Time);%线路最大功率对偶变量
+EpsilonMin=sdpvar(numBuses,Time);%相角最小值对偶变量
+EpsilonMax=sdpvar(numBuses,Time);%相角最大值对偶变量
+Epsilon=sdpvar(1,Time);%参考相角对偶变量
+MiuMeoMax=sdpvar(Time,1);%能源零售商最小中标电量对偶变量
+MiuMeoMin=sdpvar(Time,1);%能源零售商最大中标电量对偶变量
+disp("创建强对偶问题决策变量...");
+Fai=sdpvar(1,1);%购电成本替代变量
+Cmeo=sdpvar(Time,1);%报价变量
+U_MiuMax=binvar(numGenerators,Time);%发电机最大输出功率0-1变量
+U_MiuMin=binvar(numGenerators,Time);%发电机最小输出功率0-1变量
+U_Vmin=binvar(numBranches,Time);%线路最小功率0-1变量
+U_Vmax=binvar(numBranches,Time);%线路最大功率0-1变量
+U_EpsilonMin=binvar(numBuses,Time);%相角最小值0-1变量
+U_EpsilonMax=binvar(numBuses,Time);%相角最大值0-1变量
+U_MiuMeoMax=binvar(Time,1);%能源零售商最小中标电量0-1变量
+U_MiuMeoMin=binvar(Time,1);%能源零售商最大中标电量0-1变量
+%% 创建目标函数
+disp('创建MPEC问题目标函数...');
+Cons_MPEC=[];
+%各项收益建模
+    for t=1:Time
+    Cons_MPEC=[Cons_MPEC,T1(t)==PSP*PL(t)+GSP*GL(t)+HSP*HL(t)];%售能收入，$
+    Cons_MPEC=[Cons_MPEC,T2(t)==GBP(t)*Ggm(t)+HBP(t)*Hgm(t)];%购能成本，$
+    Cons_MPEC=[Cons_MPEC,T3(t)==VOC*(Pkch(t))+VOE*(Pkdis(t))];%CAES运维成本，$
+    Cons_MPEC=[Cons_MPEC,Fai==sum(sum(CG_temp.*PG))+sum(sum(MiuMax.*PGmax_temp))-sum(sum(Lanta.*Pd))+pi*(sum(sum(EpsilonMax+EpsilonMin)))+sum(sum(Vmin.*PLmax_temp))+sum(sum(Vmax.*PLmax_temp))];%购电成本，$
+    end
+    Cons_MPEC=[Cons_MPEC,Z==sum(T1)-sum(T2)-sum(T3)-Fai];%各场景各时段的收益，$
+Cons_MPEC=[Cons_MPEC,Obj_MPEC==Z];%%最终的期望收益，$
+%% 创建约束条件
+disp('创建上层问题约束条件...');
+%CAES建模
+    for t=1:Time
+    Cons_MPEC=[Cons_MPEC,Ikch(t)+Ikdis(t)<=1];%压缩空气储能系统只能使用充电、放电、简单循环模式中的一种
+    Cons_MPEC=[Cons_MPEC,Pkch(t)>=Pkmin*Ikch(t)];%充电模式功率约束
+    Cons_MPEC=[Cons_MPEC,Pkch(t)<=Pkmax*Ikch(t)];
+    Cons_MPEC=[Cons_MPEC,Pkdis(t)>=Pkmin*Ikdis(t)];%放电模式功率约束
+    Cons_MPEC=[Cons_MPEC,Pkdis(t)<=Pkmax*Ikdis(t)];
+    Cons_MPEC=[Cons_MPEC,Ak(t)<=Akmax];%电量约束
+    Cons_MPEC=[Cons_MPEC,Ak(t)>=Akmin];
+    end
+    for t=2:Time
+        Cons_MPEC=[Cons_MPEC,Ak(t)==Ak(t-1)+ITAkch*Pkch(t)-Pkdis(t)/ITAkdis];%相邻时段电量约束
+    end
+    Cons_MPEC=[Cons_MPEC,Ak(1)==0.5*Akmax+ITAkch*Pkch(1)-Pkdis(1)/ITAkdis];%初始时段电量约束
+    Cons_MPEC=[Cons_MPEC,Ak(Time)==0.5*Akmax];%结束时段电量约束
+%P2H设备建模---热储能建模
+    for t=1:Time
+    Cons_MPEC=[Cons_MPEC,Hphch(t)>=0];%充热模式功率约束
+    Cons_MPEC=[Cons_MPEC,Hphch(t)<=Iphch(t)*Hphchmax];
+    Cons_MPEC=[Cons_MPEC,Hphdis(t)>=0];%放气模式功率约束
+    Cons_MPEC=[Cons_MPEC,Hphdis(t)<=Iphdis(t)*Hphdismax];
+    Cons_MPEC=[Cons_MPEC,Aph(t)<=Aphmax];%热量约束
+    Cons_MPEC=[Cons_MPEC,Aph(t)>=Aphmin];
+    Cons_MPEC=[Cons_MPEC,Iphch(t)+Iphdis(t)<=1];%不能同时充放热
+    Cons_MPEC=[Cons_MPEC,Aph(t)==Aph(t-1)+Hphch(t)*ITAphch-Hphdis(t)/ITAphdis];%相邻时段热量约束
+    end
+    Cons_MPEC=[Cons_MPEC,Aph(1)==0.5*Aphmax+Hphch(1)-Hphdis(1)];%初始时段热量约束
+    Cons_MPEC=[Cons_MPEC,Aph(Time)==0.5*Aphmax];%结束时段热量约束
+%CHP机组建模
+    for t=1:Time
+        Cons_MPEC=[Cons_MPEC,Pchp(t)-PA-(PA-PB)*(Hchp(t)-HA)/(HA-HB)<=0];%CHP运行可行域约束
+        Cons_MPEC=[Cons_MPEC,Pchp(t)-PB-(PB-PC)*(Hchp(t)-HB)/(HB-HC)>=-(1-Ichp(t))*M];%CHP运行可行域约束
+        Cons_MPEC=[Cons_MPEC,Pchp(t)-PC-(PC-PD)*(Hchp(t)-HC)/(HC-HD)>=-(1-Ichp(t))*M];%CHP运行可行域约束
+        Cons_MPEC=[Cons_MPEC,Pchp(t)>=Pchpmin*Ichp(t)];%CHP运行可行域约束
+        Cons_MPEC=[Cons_MPEC,Pchp(t)<=Pchpmax*Ichp(t)];%CHP运行可行域约束
+        Cons_MPEC=[Cons_MPEC,Hchp(t)>=0];%CHP运行可行域约束
+        Cons_MPEC=[Cons_MPEC,Hchp(t)<=Hchpmax*Ichp(t)];%CHP运行可行域约束
+        Cons_MPEC=[Cons_MPEC,GCchp(t)==Pchp(t)/ITAchp+SUchp(t)+SDchp(t)];%CHP运行可行域约束
+        Cons_MPEC=[Cons_MPEC,SUchp(t)>=0];
+        Cons_MPEC=[Cons_MPEC,SDchp(t)>=0];
+    end
+    for t=2:Time
+        Cons_MPEC=[Cons_MPEC,Pchp(t)-Pchp(t-1)<=RUchp];
+        Cons_MPEC=[Cons_MPEC,Pchp(t-1)-Pchp(t)<=RDchp];
+        Cons_MPEC=[Cons_MPEC,SUchp(t)>=SUGchp*(Ichp(t)-Ichp(t-1))];
+        Cons_MPEC=[Cons_MPEC,SDchp(t)>=SDGchp*(Ichp(t-1)-Ichp(t))];
+    end
+%电热锅炉机组建模
+    for t=1:Time
+        Cons_MPEC=[Cons_MPEC,Heb(t)==ITAeb*Peb(t)];
+        Cons_MPEC=[Cons_MPEC,Peb(t)>=Pebmin];
+        Cons_MPEC=[Cons_MPEC,Peb(t)<=Pebmax];
+    end
+%自备新能源机组建模
+    for t=1:Time
+           Cons_MPEC=[Cons_MPEC,Pwt(t)>=0];%最小风电出力约束
+           Cons_MPEC=[Cons_MPEC,Pwt(t)<=WindPre(t)];%最大风电出力约束
+    end
+%能量平衡约束建模
+        Cons_MPEC=[Cons_MPEC,Pmeo(t)+Pchp(t)+Pkdis(t)+Pwt(t)-Pkch(t)-Peb(t)==PL(t)];%电平衡
+        Cons_MPEC=[Cons_MPEC,Ggm(t)-GCchp(t)==GL(t)];%天然气平衡
+        Cons_MPEC=[Cons_MPEC,Hchp(t)+Hgm(t)+Hphdis(t)+Heb(t)-Hphch(t)==HL(t)];%热平衡
+    end
+%购电与购气量约束
+Cons_MPEC=[Cons_MPEC,Pmeo>=0];
+Cons_MPEC=[Cons_MPEC,Ggm>=0];
+Cons_MPEC=[Cons_MPEC,Hgm>=0];
+%报价约束
+Cons_MPEC=[Cons_MPEC,Cmeo>=Cmeomin];
+Cons_MPEC=[Cons_MPEC,Cmeo<=Cmeomax];
+disp("创建下层问题约束条件...");
+Cons_MPEC=[Cons_MPEC,(PG>=0):'MiuMin'];%最小发电功率约束
+Cons_MPEC=[Cons_MPEC,(PG<=PGmax_temp):'MiuMax'];%最大发电功率约束
+Cons_MPEC=[Cons_MPEC,(Bf*Delta>=-PLmax_temp):'Vmin'];%最小线路功率约束
+Cons_MPEC=[Cons_MPEC,(Bf*Delta<=PLmax_temp):'Vmax'];%最大线路功率约束
+Cons_MPEC=[Cons_MPEC,(Pmeo>=Pmeomin*ones(Time,1)):'MiuMeoMin'];%最小中标电量约束
+Cons_MPEC=[Cons_MPEC,(Pmeo<=Pmeomax*ones(Time,1)):'MiuMeoMax'];%最大中标电量约束
+Cons_MPEC=[Cons_MPEC,(Delta>=-pi*ones(numBuses,Time)):'EpsilonMin'];%相角最小值约束
+Cons_MPEC=[Cons_MPEC,(Delta<=pi*ones(numBuses,Time)):'EpsilonMax'];%相角最大值约束
+Cons_MPEC=[Cons_MPEC,(Delta(1,:)==0):'Epsilon'];%参考节点相角约束
+Cons_MPEC=[Cons_MPEC,(Abg*PG-Ameo*Pmeo'-Bn*Delta==Pd):'Lanta'];%功率平衡约束，对偶变量为节点数X时间数矩阵形式
+disp("创建下层问题对偶问题约束条件...");
+%对偶变量范围约束
+Cons_MPEC=[Cons_MPEC,MiuMax>=0];
+Cons_MPEC=[Cons_MPEC,MiuMin>=0];
+Cons_MPEC=[Cons_MPEC,MiuMeoMax>=0];
+Cons_MPEC=[Cons_MPEC,MiuMeoMin>=0];
+Cons_MPEC=[Cons_MPEC,Vmax>=0];
+Cons_MPEC=[Cons_MPEC,Vmin>=0];
+Cons_MPEC=[Cons_MPEC,EpsilonMax>=0];
+Cons_MPEC=[Cons_MPEC,EpsilonMin>=0];
+%决策变量系数为0约束
+Cons_MPEC=[Cons_MPEC,(-Abg'*Lanta-MiuMin+MiuMax==-CG_temp):'PG'];%Lagrange函数对PG求偏导为0
+Cons_MPEC=[Cons_MPEC,(-Cmeo+Lanta'*Ameo-MiuMeoMin+MiuMeoMax==0):'Pmeo'];%Lagrange函数对Pmeo求偏导为0----核心约束
+for i=2:numBuses
+Cons_MPEC=[Cons_MPEC,(-EpsilonMin(i,:)+EpsilonMax(i,:)+Bn(i,:)*Lanta-Bf_Inv(i,:)*Vmin+Bf_Inv(i,:)*Vmax==0):'Detlait'];%Lagrange函数对参考节点外相角求偏导为0
+end
+Cons_MPEC=[Cons_MPEC,(-EpsilonMin(1,:)+EpsilonMax(1,:)+Bn(1,:)*Lanta-Bf_Inv(1,:)*Vmin+Bf_Inv(1,:)*Vmax+Epsilon==0):'Detlat'];%Lagrange函数对参考节点相角求偏导为0
+disp("创建下层问题强对偶问题互补松弛约束条件...");
+Cons_MPEC=[Cons_MPEC,MiuMax<=M*U_MiuMax];
+Cons_MPEC=[Cons_MPEC,PGmax_temp-PG<=M*(ones(numGenerators,Time)-U_MiuMax)];
+Cons_MPEC=[Cons_MPEC,MiuMin<=M*U_MiuMin];
+Cons_MPEC=[Cons_MPEC,PG<=M*(ones(numGenerators,Time)-U_MiuMin)];
+Cons_MPEC=[Cons_MPEC,MiuMeoMax<=M*U_MiuMeoMax];
+Cons_MPEC=[Cons_MPEC,Pmeomax*ones(Time,1)-Pmeo<=M*(ones(Time,1)-U_MiuMeoMax)];
+Cons_MPEC=[Cons_MPEC,MiuMeoMin<=M*U_MiuMeoMin];
+Cons_MPEC=[Cons_MPEC,Pmeo-Pmeomin*ones(Time,1)<=M*(ones(Time,1)-U_MiuMeoMin)];
+Cons_MPEC=[Cons_MPEC,Vmax<=M*U_Vmax];
+Cons_MPEC=[Cons_MPEC,PLmax_temp-Bf*Delta<=M*(ones(numBranches,Time)-U_Vmax)];
+Cons_MPEC=[Cons_MPEC,Vmin<=M*U_Vmin];
+Cons_MPEC=[Cons_MPEC,Bf*Delta+PLmax_temp<=M*(ones(numBranches,Time)-U_Vmin)];
+Cons_MPEC=[Cons_MPEC,EpsilonMax<=M*U_EpsilonMax];
+Cons_MPEC=[Cons_MPEC,pi*ones(numBuses,Time)-Delta<=M*(ones(numBuses,Time)-U_EpsilonMax)];
+Cons_MPEC=[Cons_MPEC,EpsilonMin<=M*U_EpsilonMin];
+Cons_MPEC=[Cons_MPEC,Delta+pi*ones(numBuses,Time)<=M*(ones(numBuses,Time)-U_EpsilonMin)];
+%% 参数配置与模型求解
+disp('正在求解...');
+tic;
+Opt_MPEC=sdpsettings('verbose',1,'debug',1,'solver','cplex','savesolveroutput',1,'savesolverinput',1);
+Opt_MPEC.cplex.exportmodel='Opt_MPEC.lp';
+MPECModel=optimize(Cons_MPEC,-Obj_MPEC,Opt_MPEC);
+if MPECModel.problem==0
+    disp('MPEC模型可解');
+toc;
+tsolve=toc-tic;%求取求解时间
+else
+disp('MPEC模型不可解');
+end
+%% 获取计算结果
+Res_Case3_MPEC.Ikch=double(Ikch);
+Res_Case3_MPEC.Ikdis=double(Ikdis);
+Res_Case3_MPEC.Pkch=double(Pkch);
+Res_Case3_MPEC.Pkdis=double(Pkdis);
+Res_Case3_MPEC.Ak=double(Ak);
+Res_Case3_MPEC.Aph=double(Aph);
+Res_Case3_MPEC.Hphch=double(Hphch);
+Res_Case3_MPEC.Hphdis=double(Hphdis);
+Res_Case3_MPEC.Pchp=double(Pchp);
+Res_Case3_MPEC.Hchp=double(Hchp);
+Res_Case3_MPEC.Ichp=double(Ichp);
+Res_Case3_MPEC.SUchp=double(SUchp);
+Res_Case3_MPEC.SDchp=double(SDchp);
+Res_Case3_MPEC.GCchp=double(GCchp);
+Res_Case3_MPEC.Peb=double(Peb);
+Res_Case3_MPEC.Heb=double(Heb);
+Res_Case3_MPEC.Pwt=double(Pwt);
+Res_Case3_MPEC.Pmeo=double(Pmeo);
+Res_Case3_MPEC.Ggm=double(Ggm);
+Res_Case3_MPEC.Hgm=double(Hgm);
+Res_Case3_MPEC.T1=double(T1);
+Res_Case3_MPEC.T2=double(T2);
+Res_Case3_MPEC.T3=double(T3);
+Res_Case3_MPEC.Z=double(Z);
+Res_Case3_MPEC.Obj_MPEC=double(Obj_MPEC);
+Res_Case3_MPEC.PG=value(PG);
+Res_Case3_MPEC.Delta=value(Delta);
+Res_Case3_MPEC.Pmeo=value(Pmeo);
+Res_Case3_MPEC.Lanta=value(Lanta);
+Res_Case3_MPEC.MiuMax=value(MiuMax);
+Res_Case3_MPEC.MiuMin=value(MiuMin);
+Res_Case3_MPEC.MiuMeoMax=value(MiuMeoMax);
+Res_Case3_MPEC.MiuMeoMin=value(MiuMeoMin);
+Res_Case3_MPEC.Vmax=value(Vmax);
+Res_Case3_MPEC.Vmin=value(Vmin);
+Res_Case3_MPEC.EpsilonMax=value(EpsilonMax);
+Res_Case3_MPEC.EpsilonMin=value(EpsilonMin);
+Res_Case3_MPEC.Epsilon=value(Epsilon);
+Res_Case3_MPEC.Cmeo=value(Cmeo);
+Res_Case3_MPEC.U_MiuMax=value(U_MiuMax);
+Res_Case3_MPEC.U_MiuMin=value(U_MiuMin);
+Res_Case3_MPEC.U_MiuMeoMax=value(U_MiuMeoMax);
+Res_Case3_MPEC.U_MiuMeoMin=value(U_MiuMeoMin);
+Res_Case3_MPEC.U_Vmax=value(U_Vmax);
+Res_Case3_MPEC.U_Vmin=value(U_Vmin);
+Res_Case3_MPEC.U_EpsilonMax=value(U_EpsilonMax);
+Res_Case3_MPEC.U_EpsilonMin=value(U_EpsilonMin);
+Res_Case3_MPEC.Fai=value(Fai);
+Res_Case3_MPEC.MCP=value(Lanta(5,:))';
